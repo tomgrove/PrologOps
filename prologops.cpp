@@ -460,7 +460,7 @@ void Member0(Term* Item, Term* List, Continuation K, Retry R)
 */
 }
 
-/* A basic term printing utiliy */	
+/* A basic term printing utility */	
 	
 void Print(Term* Root)
 {
