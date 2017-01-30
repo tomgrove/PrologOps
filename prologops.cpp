@@ -54,7 +54,13 @@ enum Type
 };
 
 /* 
-There are two types. The first of these is the Variable 
+There are two types. The first of these is the Variable. In PROLOG, these are designated in the source by names starting with an uppercase char. E.g.
+
+Parent
+Child
+etc.
+
+ 
 */
 
 struct Variable
@@ -64,9 +70,9 @@ struct Variable
 };
 
 /* 
-If mIsBound is true, then mReference points to another Term. The other type is an Atom: 
+If mIsBound is true, then mReference points to another Term. In classic implementations, unbound variables are more efficiently expressed by having them refer to themselves, but here using
+an explicit flag. The other type is an Atom: 
 */
-
 
 struct Atom
 {
@@ -85,12 +91,12 @@ A bit scruffy with that 10, but the idea is that an Atom describes a collection 
 	[ H | T ]
 	coord( X, Y )
 	
-the number of arguments is given by the mArity term. Lists ( and trees, etc ) can be expressed as nested pairs:
+the number of arguments is given by the mArity term. Lists ( and trees, etc. ) can be expressed as nested pairs:
 	
 	.( one, .( two, .( three. [] )))
 	.( H, T)
 	
-A Term is simply defined as a union: 
+A Term is simply defined as a union of these two types ( and could be expressed better with boost::any or a discriminated union library, but would be overkill here ) 
 */
 
 struct Term
@@ -104,10 +110,10 @@ struct Term
 };
 
 /* 
-So this gives us a very hacky and minimal way of expressing PROLOG's data structures. "Real" PROLOG, of course, has integers, floating point
-numbers and other types, but this is enough to apply the operational  behaviour. The key operation in PROLOG is unification. This matches two
-Terms, taking unbound variables in each of the Terms and binding them to Atoms and Variables in the other Term. To support this, we define a
-function Deref. In the case of a bound variable this will follow the chain of references until it hits either an Atom or an unbound variable: 
+So this gives us a very hacky and minimal way of expressing PROLOG's data structures. Everything is a Term - a dynamically typed element. There are two types of Terms are
+being considered here - Variables and Atoms. "Real" PROLOG, of course, has integers, floating point numbers and other types, but this is enough to apply the operational behaviour. 
+The key operation in PROLOG is unification. This matches two Terms, taking unbound variables in each of the Terms and binding them to Atoms and Variables in the other Term. To 
+support this, we define a function Deref. In the case of a bound variable this will follow the chain of references until it hits either an Atom or an unbound variable: 
 */
 
 Term* Deref(Term* Root)
@@ -157,6 +163,10 @@ program flow. This could be to add co-routine support or suspend execution until
 implementing PROLOG style semantics goes slightly further - in addition to having a continuation that we execute if unification succeeds, we
 also have a Retry that we execute if unification fails. This captures the state of the program at some earlier point. To support this, we also
 have another structure called the "Trail":
+
+Alternatively, can think of this as addressing the concept of  multiple continuations. I.e. what if the program is indeterministic and there
+are multiple possible continuations. This then stores the following choice of continuation. 
+
 */
 
 struct Trail
@@ -181,7 +191,24 @@ Trail gTrail;
 
 /* 
 The trail records the binding history of terms. As terms are bound, we add them to this trail ( the term is taken from Warren's Abstract Machine
-http://wambook.sourceforge.net/ ) 
+http://wambook.sourceforge.net/ ). I admit that when I have tried to write this before, I avoided this structure and tried to have all the state
+captured inside the lambda's. But this is painful. Studying and it is simply more straightforward to capture a restore point and roll back to it -
+PROLOG like other functional languages cannot mutate variables other than through binding so this is really the only operation that has be undone
+when we return to an earlier point of execution.  
+
+Probably a good time to mention I have made absolutely no attempt at expressing variable lifetimes, so the trail will in general grow over time. 
+If one imagines something like:
+
+
+loop(X) :- write(X),
+		   NewX is X + 1,
+		   !, 
+		   loop(NewX).
+		   
+Each iteration will construct a new variable, even with the '!' which is the cut construct. 'cut' in PROLOG clears the Retry and prevents
+further backtracking. 
+
+Bind has the obvious definition:
 */ 
 
 void Bind(Term* t0, Term* t1)
@@ -229,7 +256,7 @@ void Unify(Term* t0, Term* t1, Continuation K, Retry R)
  terms are both Atoms, their terms are matched,  providing the predicate name and arity match. If this is the case, then we backtrack to 
  an earlier state by calling retry. Unify terms calls unify on each of the sub-terms. If the Arity is 0, then we have successfully unified the 
  terms and we continue. Otherwise, we create a backtrack point to follow if we fail to unify the next term. This captures the current
- trail index. In this case, this retry will simply have the effect of unwinding the unification. 
+ trail index. In this case, this retry will simply have the effect of unwinding the unification.  
  */
  
  void UnifyTerms(Term** t0s, Term** t1s, Continuation K, Retry R, int Arity)
@@ -255,6 +282,30 @@ void Unify(Term* t0, Term* t1, Continuation K, Retry R)
 }
  
 /* 
+
+Taken with Unify(), UnifyTerms() is tail recursive - this is a side effect of CPS, as no function ever returns - it simply calls its continuation. In theory, this means that no stack space is
+required for the recursive call and it can be simply turned into a jmp. This isn't true in C++, though. Consider:
+
+
+void loop( int x, std::function<void(int)> Continuation )
+{
+	printf("count: %d\n", x );
+	Continuation( x );
+}
+
+:
+loop( 0, [](int x ){ loop( x ); } );
+
+which should be an infinite loop. However, it will eventually run out of stack space. C++ is bad at identifying TR opportunities, but in this case it is simply because loop is not really TR - the call to
+the continuation is followed by running the destructor for the std::function. A solution is to truncate the stack recursion, by doing something like:
+
+
+loop( 0, []( int x) { gCont = [x](){ loop(x); }});
+while( gCont != nullptr)
+{
+	gCont();
+}
+
 And that, is basically, that - 150 lines without comments. With these definitions you can effectively implement PROLOG-like operational semantics in C++. Some utility functions: 
 */
 
@@ -285,6 +336,10 @@ Term* mkAtom(char* Name, Term* a0)
 	a->mAtom.mTerms[0] = a0;
 	return a;
 }
+
+/* 
+okay, could have used variable args here - cut n paste laziness! 
+*/
 
 Term* mkAtom(char* Name, Term* a0, Term* a1)
 {
